@@ -98,6 +98,7 @@ async fn run(args: Args) -> Result<()> {
                 .map(|file_info| Task {
                     file_info: file_info.clone(),
                     file_path: archive_path.to_string_lossy().to_string(),
+                    file_type,
                 })
                 .collect()
         }
@@ -105,12 +106,14 @@ async fn run(args: Args) -> Result<()> {
             vec![Task {
                 file_info: file_infos[0].clone(),
                 file_path: archive_path.to_string_lossy().to_string(),
+                file_type,
             }]
         }
         FileType::PlainFile => {
             vec![Task {
                 file_info: file_infos[0].clone(),
                 file_path: archive_path.to_string_lossy().to_string(),
+                file_type,
             }]
         }
     };

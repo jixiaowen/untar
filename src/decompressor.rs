@@ -49,40 +49,11 @@ pub fn detect_file_compression(filename: &str) -> CompressionType {
     }
 }
 
-pub struct ExtractedFile {
-    pub name: String,
-    pub size: u64,
-    pub reader: Box<dyn Read + Send>,
-}
-
-pub fn extract_file<P: AsRef<Path>>(
-    file_path: P,
-    target_filename: Option<&str>,
-) -> Result<ExtractedFile> {
-    let file_path = file_path.as_ref();
-    let file_type = detect_file_type(file_path)?;
-    
-    match file_type {
-        FileType::Tar => {
-            if let Some(target) = target_filename {
-                extract_file_from_tar(file_path, target)
-            } else {
-                Err(anyhow::anyhow!("Target filename required for tar files"))
-            }
-        }
-        FileType::CompressedFile => {
-            extract_compressed_file(file_path)
-        }
-        FileType::PlainFile => {
-            extract_plain_file(file_path)
-        }
-    }
-}
-
 pub fn extract_file_from_tar<P: AsRef<Path>>(
     tar_path: P,
     target_filename: &str,
-) -> Result<ExtractedFile> {
+    mut uploader: impl FnMut(&[u8], bool) -> Result<()>,
+) -> Result<u64> {
     let tar_path = tar_path.as_ref();
     info!("Extracting '{}' from tar: {}", target_filename, tar_path.display());
     
@@ -105,7 +76,7 @@ pub fn extract_file_from_tar<P: AsRef<Path>>(
                 let compression = detect_file_compression(&filename_str);
                 debug!("Detected compression type for '{}': {:?}", filename_str, compression);
                 
-                let reader: Box<dyn Read + Send> = match compression {
+                let mut reader: Box<dyn Read> = match compression {
                     CompressionType::Gzip => {
                         debug!("Creating Gzip decoder");
                         Box::new(GzDecoder::new(entry))
@@ -120,11 +91,24 @@ pub fn extract_file_from_tar<P: AsRef<Path>>(
                     }
                 };
                 
-                return Ok(ExtractedFile {
-                    name: filename_str,
-                    size,
-                    reader,
-                });
+                let mut buffer = vec![0u8; 1024 * 1024];
+                let mut total_size = 0u64;
+                
+                loop {
+                    let bytes_read = reader.read(&mut buffer)
+                        .context("Failed to read from decompressor")?;
+                    
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    
+                    total_size += bytes_read as u64;
+                    uploader(&buffer[..bytes_read], false)?;
+                }
+                
+                uploader(&[], true)?;
+                
+                return Ok(total_size);
             }
         }
     }
@@ -136,7 +120,10 @@ pub fn extract_file_from_tar<P: AsRef<Path>>(
     ))
 }
 
-fn extract_compressed_file<P: AsRef<Path>>(file_path: P) -> Result<ExtractedFile> {
+pub fn extract_compressed_file<P: AsRef<Path>>(
+    file_path: P,
+    mut uploader: impl FnMut(&[u8], bool) -> Result<()>,
+) -> Result<u64> {
     let file_path = file_path.as_ref();
     info!("Extracting compressed file: {}", file_path.display());
     
@@ -151,7 +138,7 @@ fn extract_compressed_file<P: AsRef<Path>>(file_path: P) -> Result<ExtractedFile
     let compression = detect_file_compression(filename);
     debug!("Detected compression type for '{}': {:?}", filename, compression);
     
-    let reader: Box<dyn Read + Send> = match compression {
+    let mut reader: Box<dyn Read> = match compression {
         CompressionType::Gzip => {
             debug!("Creating Gzip decoder");
             Box::new(GzDecoder::new(reader))
@@ -166,76 +153,53 @@ fn extract_compressed_file<P: AsRef<Path>>(file_path: P) -> Result<ExtractedFile
         }
     };
     
-    let metadata = std::fs::metadata(file_path)?;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut total_size = 0u64;
     
-    Ok(ExtractedFile {
-        name: filename.to_string(),
-        size: metadata.len(),
-        reader,
-    })
+    loop {
+        let bytes_read = reader.read(&mut buffer)
+            .context("Failed to read from decompressor")?;
+        
+        if bytes_read == 0 {
+            break;
+        }
+        
+        total_size += bytes_read as u64;
+        uploader(&buffer[..bytes_read], false)?;
+    }
+    
+    uploader(&[], true)?;
+    
+    Ok(total_size)
 }
 
-fn extract_plain_file<P: AsRef<Path>>(file_path: P) -> Result<ExtractedFile> {
+pub fn extract_plain_file<P: AsRef<Path>>(
+    file_path: P,
+    mut uploader: impl FnMut(&[u8], bool) -> Result<()>,
+) -> Result<u64> {
     let file_path = file_path.as_ref();
     info!("Reading plain file: {}", file_path.display());
     
     let file = File::open(file_path)
         .with_context(|| format!("Failed to open file: {}", file_path.display()))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     
-    let filename = file_path.file_name()
-        .and_then(|n| n.to_str())
-        .context("Invalid filename")?;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut total_size = 0u64;
     
-    let metadata = std::fs::metadata(file_path)?;
-    
-    Ok(ExtractedFile {
-        name: filename.to_string(),
-        size: metadata.len(),
-        reader: Box::new(reader),
-    })
-}
-
-pub fn extract_all_files_from_tar<P: AsRef<Path>>(
-    tar_path: P,
-) -> Result<Vec<ExtractedFile>> {
-    let tar_path = tar_path.as_ref();
-    info!("Extracting all files from tar: {}", tar_path.display());
-    
-    let file = File::open(tar_path)
-        .with_context(|| format!("Failed to open tar file: {}", tar_path.display()))?;
-    let reader = BufReader::new(file);
-    
-    let mut tar = Archive::new(reader);
-    let mut files = Vec::new();
-    
-    for entry in tar.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?;
-        let size = entry.size();
+    loop {
+        let bytes_read = reader.read(&mut buffer)
+            .context("Failed to read from file")?;
         
-        let filename_str = path.to_string_lossy().to_string();
-        let compression = detect_file_compression(&filename_str);
-        debug!("Processing '{}': compression type: {:?}", filename_str, compression);
+        if bytes_read == 0 {
+            break;
+        }
         
-        let reader: Box<dyn Read + Send> = match compression {
-            CompressionType::Gzip => {
-                Box::new(GzDecoder::new(entry))
-            }
-            CompressionType::Z => {
-                Box::new(ZlibDecoder::new(entry))
-            }
-            CompressionType::None => {
-                Box::new(entry)
-            }
-        };
-        
-        files.push(ExtractedFile {
-            name: filename_str,
-            size,
-            reader,
-        });
+        total_size += bytes_read as u64;
+        uploader(&buffer[..bytes_read], false)?;
     }
     
-    Ok(files)
+    uploader(&[], true)?;
+    
+    Ok(total_size)
 }

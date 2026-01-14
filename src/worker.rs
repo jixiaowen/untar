@@ -1,11 +1,10 @@
 use crate::config::Config;
-use crate::decompressor::extract_file;
+use crate::decompressor::{extract_compressed_file, extract_file_from_tar, extract_plain_file, FileType};
 use crate::hdfs_uploader::HdfsUploader;
 use crate::validator::validate_file_integrity;
 use crate::xml_parser::FileInfo;
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
-use std::io::Read;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
@@ -14,6 +13,7 @@ use tracing::{debug, info, warn};
 pub struct Task {
     pub file_info: FileInfo,
     pub file_path: String,
+    pub file_type: FileType,
 }
 
 #[derive(Debug)]
@@ -103,33 +103,37 @@ impl WorkerPool {
     ) -> Result<u64> {
         debug!("Extracting file: {}", task.file_info.name);
         
-        let mut extracted = extract_file(&task.file_path, Some(&task.file_info.name))
-            .context("Failed to extract file")?;
+        let uploader_clone = uploader.clone();
+        let filename = task.file_info.name.clone();
         
-        let mut actual_size = 0u64;
-        let chunk_size = (config.max_memory_mb * 1024 * 1024) as usize;
-        let mut buffer = vec![0u8; chunk_size.min(1024 * 1024)];
-        
-        loop {
-            let bytes_read = extracted.reader.read(&mut buffer)
-                .context("Failed to read from decompressor")?;
-            
-            if bytes_read == 0 {
-                break;
+        let actual_size = tokio::task::spawn_blocking(move || {
+            match task.file_type {
+                FileType::Tar => {
+                    extract_file_from_tar(&task.file_path, &task.file_info.name, |chunk, is_final| {
+                        let uploader = uploader_clone.clone();
+                        tokio::runtime::Handle::current().block_on(async {
+                            uploader.upload_chunk(&filename, chunk, is_final).await
+                        })
+                    })
+                }
+                FileType::CompressedFile => {
+                    extract_compressed_file(&task.file_path, |chunk, is_final| {
+                        let uploader = uploader_clone.clone();
+                        tokio::runtime::Handle::current().block_on(async {
+                            uploader.upload_chunk(&filename, chunk, is_final).await
+                        })
+                    })
+                }
+                FileType::PlainFile => {
+                    extract_plain_file(&task.file_path, |chunk, is_final| {
+                        let uploader = uploader_clone.clone();
+                        tokio::runtime::Handle::current().block_on(async {
+                            uploader.upload_chunk(&filename, chunk, is_final).await
+                        })
+                    })
+                }
             }
-            
-            actual_size += bytes_read as u64;
-            
-            uploader
-                .upload_chunk(&task.file_info.name, &buffer[..bytes_read], false)
-                .await
-                .context("Failed to upload chunk to HDFS")?;
-        }
-        
-        uploader
-            .upload_chunk(&task.file_info.name, &[], true)
-            .await
-            .context("Failed to finalize upload to HDFS")?;
+        }).await??;
         
         let validation = validate_file_integrity(&task.file_info, actual_size);
         
