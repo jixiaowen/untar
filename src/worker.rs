@@ -1,10 +1,11 @@
 use crate::config::Config;
-use crate::decompressor::extract_file_from_tar;
+use crate::decompressor::extract_file;
 use crate::hdfs_uploader::HdfsUploader;
 use crate::validator::validate_file_integrity;
 use crate::xml_parser::FileInfo;
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
+use std::io::Read;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
@@ -12,7 +13,7 @@ use tracing::{debug, info, warn};
 #[derive(Debug)]
 pub struct Task {
     pub file_info: FileInfo,
-    pub tar_path: String,
+    pub file_path: String,
 }
 
 #[derive(Debug)]
@@ -102,10 +103,35 @@ impl WorkerPool {
     ) -> Result<u64> {
         debug!("Extracting file: {}", task.file_info.name);
         
-        let extracted = extract_file_from_tar(&task.tar_path, &task.file_info.name)
-            .context("Failed to extract file from tar")?;
+        let mut extracted = extract_file(&task.file_path, Some(&task.file_info.name))
+            .context("Failed to extract file")?;
         
-        let validation = validate_file_integrity(&task.file_info, &extracted);
+        let mut actual_size = 0u64;
+        let chunk_size = (config.max_memory_mb * 1024 * 1024) as usize;
+        let mut buffer = vec![0u8; chunk_size.min(1024 * 1024)];
+        
+        loop {
+            let bytes_read = extracted.reader.read(&mut buffer)
+                .context("Failed to read from decompressor")?;
+            
+            if bytes_read == 0 {
+                break;
+            }
+            
+            actual_size += bytes_read as u64;
+            
+            uploader
+                .upload_chunk(&task.file_info.name, &buffer[..bytes_read], false)
+                .await
+                .context("Failed to upload chunk to HDFS")?;
+        }
+        
+        uploader
+            .upload_chunk(&task.file_info.name, &[], true)
+            .await
+            .context("Failed to finalize upload to HDFS")?;
+        
+        let validation = validate_file_integrity(&task.file_info, actual_size);
         
         if !validation.is_valid {
             return Err(anyhow::anyhow!(
@@ -115,14 +141,8 @@ impl WorkerPool {
             ));
         }
         
-        debug!("Uploading file to HDFS: {}", task.file_info.name);
-        
-        uploader
-            .upload_file_stream(&task.file_info.name, &extracted.data)
-            .await
-            .context("Failed to upload file to HDFS")?;
-        
-        Ok(extracted.size)
+        debug!("Successfully uploaded file to HDFS: {}", task.file_info.name);
+        Ok(actual_size)
     }
     
     pub fn print_summary(&self, results: &[TaskResult]) {

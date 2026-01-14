@@ -13,10 +13,9 @@ pub struct ValidationResult {
 
 pub fn validate_file_integrity(
     file_info: &FileInfo,
-    extracted_file: &ExtractedFile,
+    actual_size: u64,
 ) -> ValidationResult {
     let expected_size = file_info.size;
-    let actual_size = extracted_file.size;
     let is_valid = expected_size == actual_size;
     
     if is_valid {
@@ -42,6 +41,13 @@ pub fn validate_file_integrity(
     }
 }
 
+pub fn validate_file_integrity_with_extracted(
+    file_info: &FileInfo,
+    extracted_file: &ExtractedFile,
+) -> ValidationResult {
+    validate_file_integrity(file_info, extracted_file.size)
+}
+
 pub fn validate_multiple_files(
     file_infos: &[FileInfo],
     extracted_files: &[ExtractedFile],
@@ -52,7 +58,7 @@ pub fn validate_multiple_files(
         if let Some(extracted) = extracted_files.iter().find(|f| {
             f.name.contains(&file_info.name) || f.name == file_info.name
         }) {
-            results.push(validate_file_integrity(file_info, extracted));
+            results.push(validate_file_integrity_with_extracted(file_info, extracted));
         } else {
             warn!("File '{}' not found in extracted files", file_info.name);
             results.push(ValidationResult {
@@ -101,13 +107,7 @@ mod tests {
             size: 1024,
         };
         
-        let extracted_file = ExtractedFile {
-            name: "test.txt".to_string(),
-            size: 1024,
-            data: vec![0u8; 1024],
-        };
-        
-        let result = validate_file_integrity(&file_info, &extracted_file);
+        let result = validate_file_integrity(&file_info, 1024);
         assert!(result.is_valid);
         assert_eq!(result.expected_size, 1024);
         assert_eq!(result.actual_size, 1024);
@@ -120,13 +120,7 @@ mod tests {
             size: 1024,
         };
         
-        let extracted_file = ExtractedFile {
-            name: "test.txt".to_string(),
-            size: 2048,
-            data: vec![0u8; 2048],
-        };
-        
-        let result = validate_file_integrity(&file_info, &extracted_file);
+        let result = validate_file_integrity(&file_info, 2048);
         assert!(!result.is_valid);
         assert_eq!(result.expected_size, 1024);
         assert_eq!(result.actual_size, 2048);
@@ -149,12 +143,12 @@ mod tests {
             ExtractedFile {
                 name: "test1.txt".to_string(),
                 size: 1024,
-                data: vec![0u8; 1024],
+                reader: Box::new(std::io::empty()),
             },
             ExtractedFile {
                 name: "test2.txt".to_string(),
                 size: 2048,
-                data: vec![0u8; 2048],
+                reader: Box::new(std::io::empty()),
             },
         ];
         

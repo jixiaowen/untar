@@ -8,7 +8,7 @@ tokio = { version = "1.35", features = ["full"] }
 clap = { version = "4.4", features = ["derive"] }
 quick-xml = "0.31"
 tar = "0.4"
-flate2 = "1.0"
+flate2 = { version = "1.0", features = ["zlib"] }
 hdfs-native = "0.9"
 anyhow = "1.0"
 tracing = "0.1"

@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
 use hdfs_native::Client;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use tracing::{debug, info, warn};
 
 pub struct HdfsUploader {
     client: Client,
     base_path: String,
+    writers: Mutex<HashMap<String, hdfs_native::file::FileWriter>>,
 }
 
 impl HdfsUploader {
@@ -28,6 +31,7 @@ impl HdfsUploader {
         Ok(HdfsUploader {
             client,
             base_path: base_path.to_string(),
+            writers: Mutex::new(HashMap::new()),
         })
     }
     
@@ -61,6 +65,37 @@ impl HdfsUploader {
             .context("Failed to close HDFS writer")?;
         
         debug!("Successfully uploaded: {}", hdfs_path);
+        Ok(())
+    }
+    
+    pub async fn upload_chunk(&self, filename: &str, chunk: &[u8], is_last: bool) -> Result<()> {
+        let hdfs_path = format!("{}/{}", self.base_path.trim_end_matches('/'), filename);
+        
+        let mut writers = self.writers.lock().unwrap();
+        
+        if !writers.contains_key(filename) {
+            debug!("Creating new HDFS writer for: {}", hdfs_path);
+            let writer = self.client
+                .create_writer(&hdfs_path)
+                .await
+                .context(format!("Failed to create HDFS writer: {}", hdfs_path))?;
+            writers.insert(filename.to_string(), writer);
+        }
+        
+        let writer = writers.get_mut(filename).unwrap();
+        
+        use tokio::io::AsyncWriteExt;
+        writer.write_all(chunk).await
+            .context("Failed to write chunk to HDFS")?;
+        
+        if is_last {
+            debug!("Closing HDFS writer for: {}", hdfs_path);
+            writer.shutdown().await
+                .context("Failed to close HDFS writer")?;
+            writers.remove(filename);
+            info!("Successfully uploaded: {}", hdfs_path);
+        }
+        
         Ok(())
     }
     

@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::Args;
 use config::Config;
+use decompressor::{detect_file_type, FileType};
 use hdfs_uploader::HdfsUploader;
 use path_finder::{find_path_with_date, find_tar_file};
 use std::sync::Arc;
@@ -66,11 +67,14 @@ async fn run(args: Args) -> Result<()> {
     
     info!("Found {} files in XML", file_infos.len());
     
-    info!("Step 3: Finding tar file");
-    let tar_path = find_tar_file(&target_path, &config.tar_name)
-        .context("Failed to find tar file")?;
+    info!("Step 3: Finding archive file");
+    let archive_path = find_tar_file(&target_path, &config.tar_name)
+        .context("Failed to find archive file")?;
     
-    info!("Found tar file: {}", tar_path.display());
+    info!("Found archive file: {}", archive_path.display());
+    
+    let file_type = detect_file_type(&archive_path)?;
+    info!("Detected file type: {:?}", file_type);
     
     info!("Step 4: Connecting to HDFS");
     let uploader = HdfsUploader::new(
@@ -87,13 +91,29 @@ async fn run(args: Args) -> Result<()> {
     let pool = WorkerPool::new(config.clone(), uploader.clone());
     
     info!("Step 6: Preparing tasks");
-    let tasks: Vec<Task> = file_infos
-        .iter()
-        .map(|file_info| Task {
-            file_info: file_info.clone(),
-            tar_path: tar_path.to_string_lossy().to_string(),
-        })
-        .collect();
+    let tasks: Vec<Task> = match file_type {
+        FileType::Tar => {
+            file_infos
+                .iter()
+                .map(|file_info| Task {
+                    file_info: file_info.clone(),
+                    file_path: archive_path.to_string_lossy().to_string(),
+                })
+                .collect()
+        }
+        FileType::CompressedFile => {
+            vec![Task {
+                file_info: file_infos[0].clone(),
+                file_path: archive_path.to_string_lossy().to_string(),
+            }]
+        }
+        FileType::PlainFile => {
+            vec![Task {
+                file_info: file_infos[0].clone(),
+                file_path: archive_path.to_string_lossy().to_string(),
+            }]
+        }
+    };
     
     info!("Step 7: Processing files");
     let results = pool.process_tasks(tasks).await;
