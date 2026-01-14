@@ -1,6 +1,4 @@
 use crate::xml_parser::FileInfo;
-use crate::decompressor::ExtractedFile;
-use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 #[derive(Debug)]
@@ -39,38 +37,6 @@ pub fn validate_file_integrity(
         actual_size,
         is_valid,
     }
-}
-
-pub fn validate_file_integrity_with_extracted(
-    file_info: &FileInfo,
-    extracted_file: &ExtractedFile,
-) -> ValidationResult {
-    validate_file_integrity(file_info, extracted_file.size)
-}
-
-pub fn validate_multiple_files(
-    file_infos: &[FileInfo],
-    extracted_files: &[ExtractedFile],
-) -> Vec<ValidationResult> {
-    let mut results = Vec::new();
-    
-    for file_info in file_infos {
-        if let Some(extracted) = extracted_files.iter().find(|f| {
-            f.name.contains(&file_info.name) || f.name == file_info.name
-        }) {
-            results.push(validate_file_integrity_with_extracted(file_info, extracted));
-        } else {
-            warn!("File '{}' not found in extracted files", file_info.name);
-            results.push(ValidationResult {
-                filename: file_info.name.clone(),
-                expected_size: file_info.size,
-                actual_size: 0,
-                is_valid: false,
-            });
-        }
-    }
-    
-    results
 }
 
 pub fn print_validation_summary(results: &[ValidationResult]) {
@@ -124,37 +90,5 @@ mod tests {
         assert!(!result.is_valid);
         assert_eq!(result.expected_size, 1024);
         assert_eq!(result.actual_size, 2048);
-    }
-    
-    #[test]
-    fn test_validate_multiple_files() {
-        let file_infos = vec![
-            FileInfo {
-                name: "test1.txt".to_string(),
-                size: 1024,
-            },
-            FileInfo {
-                name: "test2.txt".to_string(),
-                size: 2048,
-            },
-        ];
-        
-        let extracted_files = vec![
-            ExtractedFile {
-                name: "test1.txt".to_string(),
-                size: 1024,
-                reader: Box::new(std::io::empty()),
-            },
-            ExtractedFile {
-                name: "test2.txt".to_string(),
-                size: 2048,
-                reader: Box::new(std::io::empty()),
-            },
-        ];
-        
-        let results = validate_multiple_files(&file_infos, &extracted_files);
-        assert_eq!(results.len(), 2);
-        assert!(results[0].is_valid);
-        assert!(results[1].is_valid);
     }
 }

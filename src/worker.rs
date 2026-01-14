@@ -4,7 +4,9 @@ use crate::hdfs_uploader::HdfsUploader;
 use crate::validator::validate_file_integrity;
 use crate::xml_parser::FileInfo;
 use anyhow::{Context, Result};
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use futures::stream::{self, StreamExt};
+use std::io::Error;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
@@ -49,11 +51,10 @@ impl WorkerPool {
             .map(|task| {
                 let semaphore = self.semaphore.clone();
                 let uploader = self.uploader.clone();
-                let config = self.config.clone();
                 
                 async move {
                     let permit = semaphore.acquire().await.unwrap();
-                    let result = Self::process_single_task(task, uploader, config).await;
+                    let result = Self::process_single_task(task, uploader).await;
                     drop(permit);
                     result
                 }
@@ -68,13 +69,12 @@ impl WorkerPool {
     async fn process_single_task(
         task: Task,
         uploader: Arc<HdfsUploader>,
-        config: Arc<Config>,
     ) -> TaskResult {
         let filename = task.file_info.name.clone();
         
         info!("Processing file: {}", filename);
         
-        match Self::extract_and_upload(&task, &uploader, &config).await {
+        match Self::extract_and_upload_streaming(task, uploader).await {
             Ok(size) => {
                 info!("Successfully processed: {}", filename);
                 TaskResult {
@@ -96,46 +96,50 @@ impl WorkerPool {
         }
     }
     
-    async fn extract_and_upload(
-        task: &Task,
-        uploader: &HdfsUploader,
-        config: &Config,
+    async fn extract_and_upload_streaming(
+        task: Task,
+        uploader: Arc<HdfsUploader>,
     ) -> Result<u64> {
-        debug!("Extracting file: {}", task.file_info.name);
+        debug!("Streaming extract and upload: {}", task.file_info.name);
         
-        let uploader_clone = uploader.clone();
         let filename = task.file_info.name.clone();
+        let file_path = task.file_path.clone();
+        let file_type = task.file_type;
         
-        let actual_size = tokio::task::spawn_blocking(move || {
-            match task.file_type {
+        let (sender, receiver): (Sender<Result<Vec<u8>, Error>>, Receiver<Result<Vec<u8>, Error>>) = unbounded();
+        
+        let extract_result = tokio::task::spawn_blocking(move || {
+            let sender_clone = sender.clone();
+            let result = match file_type {
                 FileType::Tar => {
-                    extract_file_from_tar(&task.file_path, &task.file_info.name, |chunk, is_final| {
-                        let uploader = uploader_clone.clone();
-                        tokio::runtime::Handle::current().block_on(async {
-                            uploader.upload_chunk(&filename, chunk, is_final).await
-                        })
+                    extract_file_from_tar(&file_path, &task.file_info.name, |chunk, _is_final| {
+                        let data = chunk.to_vec();
+                        sender_clone.send(Ok(data)).map_err(|e| anyhow::anyhow!("Channel send failed: {}", e))
                     })
                 }
                 FileType::CompressedFile => {
-                    extract_compressed_file(&task.file_path, |chunk, is_final| {
-                        let uploader = uploader_clone.clone();
-                        tokio::runtime::Handle::current().block_on(async {
-                            uploader.upload_chunk(&filename, chunk, is_final).await
-                        })
+                    extract_compressed_file(&file_path, |chunk, _is_final| {
+                        let data = chunk.to_vec();
+                        sender_clone.send(Ok(data)).map_err(|e| anyhow::anyhow!("Channel send failed: {}", e))
                     })
                 }
                 FileType::PlainFile => {
-                    extract_plain_file(&task.file_path, |chunk, is_final| {
-                        let uploader = uploader_clone.clone();
-                        tokio::runtime::Handle::current().block_on(async {
-                            uploader.upload_chunk(&filename, chunk, is_final).await
-                        })
+                    extract_plain_file(&file_path, |chunk, _is_final| {
+                        let data = chunk.to_vec();
+                        sender_clone.send(Ok(data)).map_err(|e| anyhow::anyhow!("Channel send failed: {}", e))
                     })
                 }
-            }
-        }).await??;
+            };
+            drop(sender_clone);
+            result
+        }).await.context("Failed to start extraction task")?;
         
-        let validation = validate_file_integrity(&task.file_info, actual_size);
+        extract_result.context("Failed to extract file")?;
+        
+        let upload_result = uploader.upload_from_receiver(&filename, receiver).await
+            .context("Failed to upload file to HDFS")?;
+        
+        let validation = validate_file_integrity(&task.file_info, upload_result);
         
         if !validation.is_valid {
             return Err(anyhow::anyhow!(
@@ -146,7 +150,7 @@ impl WorkerPool {
         }
         
         debug!("Successfully uploaded file to HDFS: {}", task.file_info.name);
-        Ok(actual_size)
+        Ok(upload_result)
     }
     
     pub fn print_summary(&self, results: &[TaskResult]) {

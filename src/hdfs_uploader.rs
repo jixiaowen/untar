@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
+use crossbeam::channel::{Receiver, Sender};
 use hdfs_native::Client;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 pub struct HdfsUploader {
     client: Client,
     base_path: String,
-    writers: Mutex<HashMap<String, hdfs_native::file::FileWriter>>,
+    writers: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl HdfsUploader {
@@ -40,7 +41,7 @@ impl HdfsUploader {
         info!("Uploading file to HDFS: {}", hdfs_path);
         
         self.client
-            .create_file(&hdfs_path, data)
+            .write(&hdfs_path, data)
             .await
             .context(format!("Failed to upload file to HDFS: {}", hdfs_path))?;
         
@@ -49,59 +50,95 @@ impl HdfsUploader {
     }
     
     pub async fn upload_file_stream(&self, filename: &str, data: &[u8]) -> Result<()> {
+        self.upload_file(filename, data).await
+    }
+    
+    pub async fn upload_chunk(&self, filename: &str, chunk: &[u8], _is_last: bool) -> Result<()> {
         let hdfs_path = format!("{}/{}", self.base_path.trim_end_matches('/'), filename);
-        info!("Uploading file to HDFS (stream): {}", hdfs_path);
         
-        let mut writer = self.client
-            .create_writer(&hdfs_path)
-            .await
-            .context(format!("Failed to create HDFS writer: {}", hdfs_path))?;
+        let mut writers = self.writers.lock().await;
         
-        use tokio::io::AsyncWriteExt;
-        writer.write_all(data).await
-            .context("Failed to write data to HDFS")?;
+        if !writers.contains_key(filename) {
+            debug!("Creating new buffer for: {}", hdfs_path);
+            writers.insert(filename.to_string(), Vec::new());
+        }
         
-        writer.shutdown().await
-            .context("Failed to close HDFS writer")?;
+        let buffer = writers.get_mut(filename).unwrap();
+        buffer.extend_from_slice(chunk);
         
-        debug!("Successfully uploaded: {}", hdfs_path);
+        debug!("Buffered {} bytes for: {}", chunk.len(), hdfs_path);
         Ok(())
     }
     
-    pub async fn upload_chunk(&self, filename: &str, chunk: &[u8], is_last: bool) -> Result<()> {
+    pub async fn finalize_file(&self, filename: &str) -> Result<()> {
         let hdfs_path = format!("{}/{}", self.base_path.trim_end_matches('/'), filename);
         
-        let mut writers = self.writers.lock().unwrap();
+        let mut writers = self.writers.lock().await;
         
-        if !writers.contains_key(filename) {
-            debug!("Creating new HDFS writer for: {}", hdfs_path);
-            let writer = self.client
-                .create_writer(&hdfs_path)
+        if let Some(data) = writers.remove(filename) {
+            info!("Finalizing upload to HDFS: {}", hdfs_path);
+            
+            self.client
+                .write(&hdfs_path, &data)
                 .await
-                .context(format!("Failed to create HDFS writer: {}", hdfs_path))?;
-            writers.insert(filename.to_string(), writer);
-        }
-        
-        let writer = writers.get_mut(filename).unwrap();
-        
-        use tokio::io::AsyncWriteExt;
-        writer.write_all(chunk).await
-            .context("Failed to write chunk to HDFS")?;
-        
-        if is_last {
-            debug!("Closing HDFS writer for: {}", hdfs_path);
-            writer.shutdown().await
-                .context("Failed to close HDFS writer")?;
-            writers.remove(filename);
-            info!("Successfully uploaded: {}", hdfs_path);
+                .context(format!("Failed to finalize upload to HDFS: {}", hdfs_path))?;
+            
+            debug!("Successfully uploaded: {}", hdfs_path);
         }
         
         Ok(())
+    }
+    
+    pub async fn upload_from_receiver(&self, filename: &str, receiver: Receiver<Result<Vec<u8>, std::io::Error>>) -> Result<u64> {
+        let hdfs_path = format!("{}/{}", self.base_path.trim_end_matches('/'), filename);
+        info!("Streaming upload to HDFS: {}", hdfs_path);
+        
+        let mut data = Vec::with_capacity(1024 * 1024);
+        let mut size = 0u64;
+        let mut is_first_chunk = true;
+        
+        for chunk_result in receiver {
+            let chunk = chunk_result.context("Failed to read chunk")?;
+            size += chunk.len() as u64;
+            
+            if is_first_chunk {
+                debug!("First chunk, creating file on HDFS: {} bytes", chunk.len());
+                self.client
+                    .write(&hdfs_path, &chunk)
+                    .await
+                    .context(format!("Failed to create file on HDFS: {}", hdfs_path))?;
+                is_first_chunk = false;
+            } else {
+                data.extend_from_slice(&chunk);
+                
+                if data.len() >= 64 * 1024 * 1024 {
+                    debug!("Buffer reached 64MB, appending to HDFS: {}", size);
+                    self.client
+                        .append(&hdfs_path, &data)
+                        .await
+                        .context(format!("Failed to append data to HDFS: {}", hdfs_path))?;
+                    data.clear();
+                }
+            }
+            
+            debug!("Processed chunk: {} bytes, total: {}", chunk.len(), size);
+        }
+        
+        if !data.is_empty() && !is_first_chunk {
+            debug!("Final append to HDFS: {}", size);
+            self.client
+                .append(&hdfs_path, &data)
+                .await
+                .context(format!("Failed to append final data to HDFS: {}", hdfs_path))?;
+        }
+        
+        debug!("Successfully uploaded (streamed): {} bytes", size);
+        Ok(size)
     }
     
     pub async fn file_exists(&self, filename: &str) -> Result<bool> {
         let hdfs_path = format!("{}/{}", self.base_path.trim_end_matches('/'), filename);
-        Ok(self.client.file_exists(&hdfs_path).await.unwrap_or(false))
+        Ok(self.client.exists(&hdfs_path).await)
     }
     
     pub async fn delete_file(&self, filename: &str) -> Result<()> {
@@ -109,7 +146,7 @@ impl HdfsUploader {
         info!("Deleting file from HDFS: {}", hdfs_path);
         
         self.client
-            .delete_file(&hdfs_path, false)
+            .delete(&hdfs_path, false)
             .await
             .context(format!("Failed to delete file from HDFS: {}", hdfs_path))?;
         

@@ -6,6 +6,12 @@ use std::path::Path;
 use tar::Archive;
 use tracing::{debug, info};
 
+#[derive(Debug, Clone)]
+pub struct ExtractedFile {
+    pub name: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum CompressionType {
     Gzip,
