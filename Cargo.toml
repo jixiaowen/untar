@@ -1,0 +1,29 @@
+[package]
+name = "untar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# CLI and Error handling
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# TAR and Decompression
+tar = "0.4"
+flate2 = "1.0"
+weezl = "0.1" # Potential for .Z decompression if handled correctly
+
+# HDFS and Storage
+opendal = { version = "0.50", features = ["services-hdfs-native", "executors-tokio"] }
+tokio = { version = "1.36", features = ["full"] }
+futures-util = "0.3"
+
+# XML parsing
+quick-xml = { version = "0.31", features = ["serialize"] }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.10"
