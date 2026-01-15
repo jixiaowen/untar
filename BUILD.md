@@ -34,17 +34,8 @@ docker build -f Dockerfile.build -t untar-build:centos7 .
 # Build x86_64 binary
 docker run --rm -v $PWD:/build untar-build:centos7 cargo build --release
 
-# Build aarch64 binary (cross-compilation)
-docker run --rm \
-  -v $PWD:/build \
-  -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-  -e CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
-  untar-build:centos7 \
-  bash -c "yum install -y gcc-aarch64-linux-gnu && rustup target add aarch64-unknown-linux-gnu && cargo build --release --target aarch64-unknown-linux-gnu"
-
-# Binary locations
-./target/release/untar                    # x86_64
-./target/aarch64-unknown-linux-gnu/release/untar  # aarch64
+# Binary location
+./target/release/untar
 ```
 
 ### Method 2: Native Build on RedHat 7
@@ -75,24 +66,6 @@ cargo build --release
 
 # Binary location
 ./target/release/untar
-```
-
-#### Cross-compile for aarch64
-
-```bash
-# Install cross-compilation tools
-sudo yum install -y gcc-aarch64-linux-gnu
-
-# Add aarch64 target
-rustup target add aarch64-unknown-linux-gnu
-
-# Build for aarch64
-export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-cargo build --release --target aarch64-unknown-linux-gnu
-
-# Binary location
-./target/aarch64-unknown-linux-gnu/release/untar
 ```
 
 ## Deployment
@@ -176,7 +149,7 @@ The project includes automated builds for RedHat 7 compatibility using Docker:
 
 - **Runner Environment**: GitHub Actions ubuntu-latest
 - **Build Environment**: CentOS 7 Docker container (ensures glibc 2.17 compatibility)
-- **Targets**: x86_64 and aarch64
+- **Target**: x86_64
 - **Artifacts**: Pre-built binaries available in GitHub releases
 
 ### How It Works
@@ -185,7 +158,7 @@ The workflow uses Docker to build binaries in a CentOS 7 environment, ensuring:
 
 1. **glibc 2.17 compatibility** - Same as RedHat 7
 2. **Consistent build environment** - Reproducible builds
-3. **Cross-platform support** - Both x86_64 and aarch64
+3. **Optimized for x86_64** - Best performance on standard servers
 
 ### Manual Trigger
 
