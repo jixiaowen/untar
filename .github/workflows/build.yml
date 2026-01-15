@@ -34,9 +34,22 @@ jobs:
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         rustup target add ${{ matrix.target }}
 
+    - name: Install cross-compilation toolchain
+      run: |
+        # Install cross-compilation tools for aarch64
+        if [ "${{ matrix.arch }}" = "aarch64" ]; then
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+        fi
+
     - name: Build binary with static linking for compatibility
       run: |
         # Build with static linking to avoid GLIBC version issues
+        if [ "${{ matrix.arch }}" = "aarch64" ]; then
+          # Set cross-compilation environment for aarch64
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+        fi
         RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }}
 
     - name: Prepare artifact
