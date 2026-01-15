@@ -14,8 +14,6 @@ jobs:
   build:
     name: Build for ${{ matrix.target }}
     runs-on: ubuntu-latest
-    container:
-      image: centos:7
     strategy:
       matrix:
         include:
@@ -28,42 +26,45 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
-    - name: Install dependencies
+    - name: Build in Docker for RedHat 7 compatibility
       run: |
-        yum install -y gcc gcc-c++ make curl git which
-        yum install -y openssl-devel
-
-    - name: Install Rust toolchain
-      run: |
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-        rustup target add ${{ matrix.target }}
-
-    - name: Install cross-compilation toolchain
-      run: |
-        # Install cross-compilation tools for aarch64
+        # Create Dockerfile for RedHat 7 build
+        cat > Dockerfile.build << 'EOF'
+        FROM centos:7
+        RUN yum install -y gcc gcc-c++ make curl git which openssl-devel
+        RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+        ENV PATH="/root/.cargo/bin:${PATH}"
+        WORKDIR /build
+        EOF
+        
+        # Build Docker image
+        docker build -f Dockerfile.build -t untar-build:centos7 .
+        
+        # Run build in Docker container
         if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          docker run --rm \
+            -v $PWD:/build \
+            -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+            -e CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+            untar-build:centos7 \
+            bash -c "yum install -y gcc-aarch64-linux-gnu && rustup target add aarch64-unknown-linux-gnu && cargo build --release --target ${{ matrix.target }}"
+        else
+          docker run --rm \
+            -v $PWD:/build \
+            untar-build:centos7 \
+            bash -c "cargo build --release --target ${{ matrix.target }}"
         fi
-
-    - name: Build binary for RedHat 7 compatibility
-      run: |
-        # Build for RedHat 7 (glibc 2.17 compatibility)
-        if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          # Set cross-compilation environment for aarch64
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-        fi
-        cargo build --release --target ${{ matrix.target }}
 
     - name: Prepare artifact
       run: |
         mkdir -p artifacts
         cp target/${{ matrix.target }}/release/untar artifacts/${{ matrix.artifact_name }}
         chmod +x artifacts/${{ matrix.artifact_name }}
+        
+        # Clean up temporary files
+        rm -f Dockerfile.build
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

@@ -1,0 +1,16 @@
+FROM centos:7
+
+# Install build dependencies
+RUN yum install -y gcc gcc-c++ make curl git which openssl-devel
+
+# Install Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+
+# Add Cargo to PATH
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Set working directory
+WORKDIR /build
+
+# Default command
+CMD ["cargo", "build", "--release"]
