@@ -1,7 +1,8 @@
 use std::io::Read;
 use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
-use hdfs_native::Client;
+use bytes::Bytes;
+use hdfs_native::client::{Client, WriteOptions};
 use tar::Archive;
 use tokio::sync::mpsc;
 use tracing::{info, warn, error};
@@ -10,7 +11,7 @@ use crate::config::Config;
 use crate::decompress::{get_format, wrap_decoder};
 
 pub struct Processor {
-    client: Client,
+    client: Arc<Client>,
     config: Arc<Config>,
     hdfs_base_path: String,
 }
@@ -18,7 +19,7 @@ pub struct Processor {
 impl Processor {
     pub fn new(client: Client, config: Config, hdfs_base_path: String) -> Self {
         Self {
-            client,
+            client: Arc::new(client),
             config: Arc::new(config),
             hdfs_base_path,
         }
@@ -61,14 +62,15 @@ impl Processor {
             let path_clone = path.clone();
             
             let upload_handle = tokio::spawn(async move {
-                let mut writer = client.create_file(&target_path_clone, false)
+                let write_options = WriteOptions::default();
+                let mut writer = client.create(&target_path_clone, write_options)
                     .await
                     .map_err(|e| anyhow!("Failed to create HDFS file {}: {}", target_path_clone, e))?;
                 let mut total_written = 0u64;
                 
                 while let Some(chunk) = rx.recv().await {
                     total_written += chunk.len() as u64;
-                    writer.write_all(&chunk).await
+                    writer.write(Bytes::from(chunk)).await
                         .map_err(|e| anyhow!("Write error to HDFS for {}: {}", target_path_clone, e))?;
                 }
                 

@@ -17,7 +17,8 @@ flate2 = "1.0"
 weezl = "0.1" # Potential for .Z decompression if handled correctly
 
 # HDFS and Storage
-hdfs-native = "0.13.2"
+hdfs-native = "0.13"
+bytes = "1.0"
 tokio = { version = "1.36", features = ["full"] }
 futures-util = "0.3"
 

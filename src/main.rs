@@ -4,7 +4,7 @@ mod processor;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use hdfs_native::Client;
+use hdfs_native::client::ClientBuilder;
 use std::fs::File;
 use tracing_subscriber;
 
@@ -49,9 +49,9 @@ async fn main() -> Result<()> {
     // hdfs-native will automatically check HADOOP_CONF_DIR 
     // for hdfs-site.xml and core-site.xml.
     let client = if let Some(url) = args.namenode {
-        Client::new(&url).context("Failed to create HDFS client")?
+        ClientBuilder::new().with_url(&url).build().context("Failed to create HDFS client")?
     } else {
-        Client::default().context("Failed to create HDFS client from config")?
+        ClientBuilder::new().build().context("Failed to create HDFS client from config")?
     };
 
     // Note: To support Kerberos:
