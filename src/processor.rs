@@ -36,14 +36,15 @@ impl Processor {
             let mut entry = entry_res.context("Failed to get tar entry")?;
             let path = entry.path()?.to_string_lossy().to_string();
             
-            // 1. Validate XML metadata
-            let expected_size = match self.config.get_expected_size(&path) {
+            let lookup_name = path.trim_end_matches(".gz").trim_end_matches(".Z").to_string();
+            
+            let expected_size = match self.config.get_expected_size(&lookup_name) {
                 Some(size) => {
-                    processed_files.insert(path.clone());
+                    processed_files.insert(lookup_name.clone());
                     size
                 },
                 None => {
-                    warn!("File {} not found in XML manifest, skipping", path);
+                    warn!("File {} (from tar: {}) not found in XML manifest, skipping", lookup_name, path);
                     continue;
                 }
             };

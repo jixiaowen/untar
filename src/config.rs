@@ -28,8 +28,8 @@ impl Config {
         let manifest: Manifest = from_str(&content).context("Failed to parse XML")?;
         
         let mut file_map = HashMap::new();
-        for entry in manifest.files {
-            file_map.insert(entry.name, entry.uncompressed_size);
+        for entry in manifest.file {
+            file_map.insert(entry.filename, entry.filesize);
         }
         
         Ok(Config { file_map })
