@@ -5,17 +5,18 @@ use anyhow::{Context, Result};
 use quick_xml::de::from_str;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename = "transmit-content")]
 pub struct Manifest {
-    #[serde(rename = "File", default)]
-    pub files: Vec<FileEntry>,
+    #[serde(rename = "file", default)]
+    pub file: Vec<FileEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct FileEntry {
-    #[serde(rename = "@name")]
-    pub name: String,
-    #[serde(rename = "@size")]
-    pub uncompressed_size: u64,
+    #[serde(rename = "filename")]
+    pub filename: String,
+    #[serde(rename = "filesize")]
+    pub filesize: u64,
 }
 
 pub struct Config {
