@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
-use opendal::Operator;
+use hdfs_native::Client;
 use tar::Archive;
 use tokio::sync::mpsc;
 use tracing::{info, warn, error};
@@ -10,15 +10,15 @@ use crate::config::Config;
 use crate::decompress::{get_format, wrap_decoder};
 
 pub struct Processor {
-    op: Operator,
+    client: Client,
     config: Arc<Config>,
     hdfs_base_path: String,
 }
 
 impl Processor {
-    pub fn new(op: Operator, config: Config, hdfs_base_path: String) -> Self {
+    pub fn new(client: Client, config: Config, hdfs_base_path: String) -> Self {
         Self {
-            op,
+            client,
             config: Arc::new(config),
             hdfs_base_path,
         }
@@ -56,18 +56,19 @@ impl Processor {
             
             // 3. Setup HDFS upload
             let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-            let op = self.op.clone();
+            let client = self.client.clone();
             let target_path_clone = target_path.clone();
             let path_clone = path.clone();
             
             let upload_handle = tokio::spawn(async move {
-                let mut writer = op.writer(&target_path_clone).await
-                    .map_err(|e| anyhow!("Failed to create HDFS writer for {}: {}", target_path_clone, e))?;
-                let mut total_written = 0;
+                let mut writer = client.create_file(&target_path_clone, false)
+                    .await
+                    .map_err(|e| anyhow!("Failed to create HDFS file {}: {}", target_path_clone, e))?;
+                let mut total_written = 0u64;
                 
                 while let Some(chunk) = rx.recv().await {
                     total_written += chunk.len() as u64;
-                    writer.write(chunk).await
+                    writer.write_all(&chunk).await
                         .map_err(|e| anyhow!("Write error to HDFS for {}: {}", target_path_clone, e))?;
                 }
                 

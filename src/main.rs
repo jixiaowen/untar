@@ -4,7 +4,7 @@ mod processor;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use opendal::Operator;
+use hdfs_native::Client;
 use std::fs::File;
 use tracing_subscriber;
 
@@ -45,24 +45,22 @@ async fn main() -> Result<()> {
     let config = Config::from_xml_file(&args.xml)
         .context("Failed to load XML manifest")?;
 
-    // 2. Initialize HDFS Operator
-    // OpenDAL's HdfsNative will automatically check HADOOP_CONF_DIR 
+    // 2. Initialize HDFS Client
+    // hdfs-native will automatically check HADOOP_CONF_DIR 
     // for hdfs-site.xml and core-site.xml.
-    let mut builder = opendal::services::HdfsNative::default();
-    if let Some(ref url) = args.namenode {
-        builder = builder.url(url);
-    }
-    
+    let client = if let Some(url) = args.namenode {
+        Client::new(&url).context("Failed to create HDFS client")?
+    } else {
+        Client::default().context("Failed to create HDFS client from config")?
+    };
+
     // Note: To support Kerberos:
     // 1. Ensure libgssapi_krb5 is installed on the system.
     // 2. Ensure HADOOP_CONF_DIR environment variable is set.
     // 3. Ensure a valid TGT existed (run kinit before executing).
 
-    let op: Operator = Operator::new(builder)?
-        .finish();
-
     // 3. Initialize Processor
-    let processor = Processor::new(op, config, args.dst);
+    let processor = Processor::new(client, config, args.dst);
 
     // 4. Run untar
     let tar_file = File::open(&args.tar)
