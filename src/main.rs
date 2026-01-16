@@ -6,7 +6,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use hdfs_native::client::ClientBuilder;
 use std::fs::File;
-use tracing_subscriber;
+use tracing_subscriber::fmt;
+use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::processor::Processor;
@@ -37,7 +38,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_timer(tracing_subscriber::fmt::time::OffsetTime::new(
+            time::UtcOffset::from_hms(8, 0, 0).unwrap(),
+            time::format_description::well_known::Rfc3339,
+        ))
+        .init();
 
     let args = Args::parse();
 
@@ -60,7 +67,7 @@ async fn main() -> Result<()> {
     // 3. Ensure a valid TGT existed (run kinit before executing).
 
     // 3. Initialize Processor
-    let processor = Processor::new(client, config, args.dst);
+    let processor = Processor::new(client, config, args.dst, args.xml);
 
     // 4. Run untar
     let tar_file = File::open(&args.tar)

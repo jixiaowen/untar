@@ -14,14 +14,16 @@ pub struct Processor {
     client: Arc<Client>,
     config: Arc<Config>,
     hdfs_base_path: String,
+    xml_file_path: String,
 }
 
 impl Processor {
-    pub fn new(client: Client, config: Config, hdfs_base_path: String) -> Self {
+    pub fn new(client: Client, config: Config, hdfs_base_path: String, xml_file_path: String) -> Self {
         Self {
             client: Arc::new(client),
             config: Arc::new(config),
             hdfs_base_path,
+            xml_file_path,
         }
     }
 
@@ -63,7 +65,7 @@ impl Processor {
             let path_clone = path.clone();
             
             let upload_handle = tokio::spawn(async move {
-                let write_options = WriteOptions::default();
+                let write_options = WriteOptions::default().overwrite(true);
                 let mut writer = client.create(&target_path_clone, write_options)
                     .await
                     .map_err(|e| anyhow!("Failed to create HDFS file {}: {}", target_path_clone, e))?;
@@ -124,6 +126,30 @@ impl Processor {
                 return Err(anyhow!("Missing file in TAR: {}", filename));
             }
         }
+
+        // Upload XML file to HDFS
+        info!("Uploading XML file to HDFS");
+        let xml_content = std::fs::read(&self.xml_file_path)
+            .map_err(|e| anyhow!("Failed to read XML file {}: {}", self.xml_file_path, e))?;
+        
+        let xml_filename = std::path::Path::new(&self.xml_file_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow!("Invalid XML file path"))?;
+        
+        let xml_target_path = format!("{}/{}", self.hdfs_base_path, xml_filename);
+        let write_options = WriteOptions::default().overwrite(true);
+        let mut writer = self.client.create(&xml_target_path, write_options)
+            .await
+            .map_err(|e| anyhow!("Failed to create HDFS file {}: {}", xml_target_path, e))?;
+        
+        writer.write(Bytes::from(xml_content)).await
+            .map_err(|e| anyhow!("Write error to HDFS for {}: {}", xml_target_path, e))?;
+        
+        writer.close().await
+            .map_err(|e| anyhow!("Close error for HDFS file {}: {}", xml_target_path, e))?;
+        
+        info!("XML file uploaded successfully to {}", xml_target_path);
 
         Ok(())
     }
